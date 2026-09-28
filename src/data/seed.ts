@@ -31,6 +31,8 @@ export const seedState = (): CodingState => {
     activeThemeId: 't-school-choice',
     coderA: '林研究员',
     coderB: '赵研究员',
+    arbitrator: '主持人',
+    adjudications: [],
     transcripts: [{ id: 'tr-001', title: '李岚访谈：教育与职业选择', participant: '李岚', importedAt: new Date().toISOString(), sourceName: '示例转写' }],
     segments: lines.map((line, index) => ({
       id: `s-${String(index + 1).padStart(3, '0')}`,

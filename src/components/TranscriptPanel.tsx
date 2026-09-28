@@ -1,6 +1,7 @@
 import { For, Show, createMemo, createSignal } from 'solid-js';
 import { Button, Checkbox, Chip, Divider, Paper, Typography } from '@suid/material';
 import type { useCodingStore } from '../store/coding-store';
+import { isDisagreement } from '../store/coding-store';
 
 type Store = ReturnType<typeof useCodingStore>;
 
@@ -8,10 +9,12 @@ export default function TranscriptPanel(props: { store: Store }) {
   const [query, setQuery] = createSignal('');
   const [selected, setSelected] = createSignal<string[]>([]);
   const [batchTheme, setBatchTheme] = createSignal('');
+  const [onlyOpenDisputes, setOnlyOpenDisputes] = createSignal(false);
 
   const segments = createMemo(() => props.store.state.segments
     .filter((segment) => segment.transcriptId === props.store.state.activeTranscriptId)
     .filter((segment) => `${segment.speaker} ${segment.text}`.toLowerCase().includes(query().toLowerCase()))
+    .filter((segment) => !onlyOpenDisputes() || (isDisagreement(segment) && !props.store.adjudicationFor(segment.id)))
     .sort((a, b) => a.order - b.order));
 
   const toggleSelected = (id: string) => {
@@ -28,6 +31,13 @@ export default function TranscriptPanel(props: { store: Store }) {
     props.store.batchAssign(selected(), 'A', batchTheme());
     setSelected([]);
   };
+
+  const openDisputeCount = createMemo(() => props.store.state.segments
+    .filter((segment) => segment.transcriptId === props.store.state.activeTranscriptId)
+    .filter((segment) => isDisagreement(segment) && !props.store.adjudicationFor(segment.id)).length);
+  const resolvedCount = createMemo(() => props.store.state.segments
+    .filter((segment) => segment.transcriptId === props.store.state.activeTranscriptId)
+    .filter((segment) => isDisagreement(segment) && props.store.adjudicationFor(segment.id)).length);
 
   return (
     <Paper class="panel transcript-panel" elevation={0}>
@@ -56,6 +66,10 @@ export default function TranscriptPanel(props: { store: Store }) {
         <input class="native-input" placeholder="搜索原文或发言人（/）" value={query()} onInput={(event) => setQuery(event.currentTarget.value)} />
         <Button size="small" onClick={toggleAll}>{selected().length === segments().length && segments().length ? '取消全选' : '全选'}</Button>
       </div>
+      <div class="dispute-filter">
+        <label><input type="checkbox" checked={onlyOpenDisputes()} onChange={(event) => setOnlyOpenDisputes(event.currentTarget.checked)} /> 只看待裁决分歧</label>
+        <span class="dispute-count">待裁决 {openDisputeCount()} · 已裁决 {resolvedCount()}</span>
+      </div>
       <div class="batch-row">
         <select class="native-select" value={batchTheme()} onChange={(event) => setBatchTheme(event.currentTarget.value)}>
           <option value="">批量分配给…</option>
@@ -67,6 +81,8 @@ export default function TranscriptPanel(props: { store: Store }) {
       <div class="segment-list">
         <For each={segments()}>{(segment, index) => {
           const isActive = () => props.store.state.activeSegmentId === segment.id;
+          const disagree = () => isDisagreement(segment);
+          const resolved = () => disagree() && Boolean(props.store.adjudicationFor(segment.id));
           const themeNames = () => [...new Set([...segment.assignments.A, ...segment.assignments.B])]
             .map((id) => props.store.state.themes.find((theme) => theme.id === id)?.name ?? '未知主题');
           return (
@@ -87,8 +103,10 @@ export default function TranscriptPanel(props: { store: Store }) {
                 <span class="segment-index">#{index() + 1}</span>
                 <span class="segment-time">{segment.time}</span>
                 <strong>{segment.speaker}</strong>
-                <Show when={segment.assignments.A.join('|') !== segment.assignments.B.join('|')}>
-                  <span class="conflict-dot" title="两位编码者判断不一致">分歧</span>
+                <Show when={disagree()}>
+                  <span class="conflict-dot" classList={{ resolved: resolved() }} title={resolved() ? '分歧已裁决' : '两位编码者判断不一致，待裁决'}>
+                    {resolved() ? '已裁决' : '待裁决'}
+                  </span>
                 </Show>
               </div>
               <p>{segment.text}</p>

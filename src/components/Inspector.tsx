@@ -2,6 +2,8 @@ import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import { Button, Chip, Divider, Paper, Typography } from '@suid/material';
 import type { Theme } from '../types';
 import type { useCodingStore } from '../store/coding-store';
+import { isDisagreement } from '../store/coding-store';
+import AdjudicationPanel from './AdjudicationPanel';
 
 type Store = ReturnType<typeof useCodingStore>;
 
@@ -100,7 +102,15 @@ export default function Inspector(props: { store: Store }) {
       <Show when={section() === 'compare'}>
         <Show when={segment()} fallback={<div class="empty-state">请先从左侧正文选择片段。</div>}>
           {(activeSegment) => <>
-            <div class="compare-intro">比较同一位受访者在同一片段上的主题判断。任何不一致都会保留，直到研究者明确调整。</div>
+            <div class="compare-intro">比较同一位受访者在同一片段上的主题判断。任何不一致都会保留，直到研究者明确调整或裁决。</div>
+            <label class="field-label arbitrator-field">裁决人
+              <input
+                class="native-input"
+                value={props.store.state.arbitrator}
+                onInput={(event) => props.store.setArbitrator(event.currentTarget.value)}
+                placeholder="作出分歧裁决的研究者姓名"
+              />
+            </label>
             <div class="compare-grid">
               <div class="coder-column">
                 <div class="coder-header"><span class="avatar">A</span><strong>{props.store.state.coderA}</strong></div>
@@ -119,8 +129,19 @@ export default function Inspector(props: { store: Store }) {
                 </select>
               </div>
             </div>
-            <Show when={activeSegment().assignments.A.join('|') !== activeSegment().assignments.B.join('|')} fallback={<div class="agreement">✓ 当前判断完全一致</div>}>
-              <div class="disagreement">⚠ 当前判断存在分歧，导出结果仍会同时保留两位编码者记录。</div>
+            <Show when={isDisagreement(activeSegment())} fallback={<div class="agreement">✓ 当前判断完全一致</div>}>
+              <Show when={props.store.adjudicationFor(activeSegment().id)} fallback={<div class="disagreement">⚠ 当前判断存在分歧，两位编码者记录都会保留；可在下方由研究者作出裁决。</div>}>
+                {(adjudication) => (
+                  <div class="disagreement resolved">⚖ 已裁决（{adjudication().basis === 'A'
+                    ? `采纳 ${props.store.state.coderA}`
+                    : adjudication().basis === 'B'
+                      ? `采纳 ${props.store.state.coderB}`
+                      : '合成双方主题'}）；原始双编码判断仍完整保留。</div>
+                )}
+              </Show>
+            </Show>
+            <Show when={isDisagreement(activeSegment()) || props.store.adjudicationFor(activeSegment().id)}>
+              <AdjudicationPanel store={props.store} segmentId={activeSegment().id} editable={isDisagreement(activeSegment())} />
             </Show>
             <label class="field-label">片段编码备忘
               <textarea class="native-textarea" value={segmentNote()} onInput={(event) => setSegmentNote(event.currentTarget.value)} onBlur={saveNote} placeholder="记录此片段的分歧处理或引文提示" />
@@ -132,7 +153,7 @@ export default function Inspector(props: { store: Store }) {
       <Show when={section() === 'audit'}>
         <div class="audit-summary">
           <div><strong>{props.store.state.audit.length}</strong><span>次最近操作</span></div>
-          <div><strong>{citations().length}</strong><span>条当前主题引用</span></div>
+          <div><strong>{props.store.state.adjudications.length}</strong><span>条裁决留档</span></div>
         </div>
         <div class="audit-list">
           <For each={props.store.state.themes.filter((item) => item.definition || item.memo)}>{(item) => (

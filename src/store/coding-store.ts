@@ -1,7 +1,7 @@
 import { createEffect, createSignal } from 'solid-js';
 import { createStore, reconcile, unwrap } from 'solid-js/store';
 import { seedState } from '../data/seed';
-import type { CoderId, CodingState, PersistedEnvelope, Segment, Theme } from '../types';
+import type { Adjudication, AdjudicationBasis, CoderId, CodingState, PersistedEnvelope, Segment, Theme } from '../types';
 import { readEnvelope, writeEnvelope } from '../utils/db';
 
 const STORAGE_KEY = 'sologsb-1019-state-v1';
@@ -10,11 +10,32 @@ const TAB_ID = crypto.randomUUID();
 const loadLocal = (): CodingState => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as CodingState;
+    if (raw) {
+      const parsed = JSON.parse(raw) as CodingState;
+      // 兼容裁决功能上线前的旧存档
+      if (!Array.isArray(parsed.adjudications)) parsed.adjudications = [];
+      if (typeof parsed.arbitrator !== 'string') parsed.arbitrator = '主持人';
+      return parsed;
+    }
   } catch {
     localStorage.removeItem(STORAGE_KEY);
   }
   return seedState();
+};
+
+/** 两位编码者对同一片段的判断是否存在分歧（顺序敏感，与界面高亮口径一致） */
+export const isDisagreement = (segment: Segment) =>
+  segment.assignments.A.join('|') !== segment.assignments.B.join('|');
+
+/** 由主题 id 解析层级路径名，如「教育经历 / 学校选择」 */
+export const themePathOf = (themeId: string, themes: Theme[]): string => {
+  const names: string[] = [];
+  let current = themes.find((theme) => theme.id === themeId);
+  while (current) {
+    names.unshift(current.name);
+    current = current.parentId ? themes.find((theme) => theme.id === current!.parentId) : undefined;
+  }
+  return names.length ? names.join(' / ') : '未知主题';
 };
 
 const cloneState = (state: CodingState): CodingState => structuredClone(unwrap(state));
@@ -185,6 +206,10 @@ export function useCodingStore() {
         segment.assignments.A = segment.assignments.A.filter((id) => id !== themeId);
         segment.assignments.B = segment.assignments.B.filter((id) => id !== themeId);
       });
+      // 裁决记录独立留档：删除主题时移除悬空引用，其余裁决结论与依据保留
+      draft.adjudications.forEach((adjudication) => {
+        adjudication.themeIds = adjudication.themeIds.filter((id) => id !== themeId);
+      });
       if (draft.activeThemeId === themeId) draft.activeThemeId = draft.themes[0]?.id ?? '';
     });
   };
@@ -198,6 +223,13 @@ export function useCodingStore() {
           if (segment.assignments[coder].includes(sourceId)) codes.add(targetId);
           segment.assignments[coder] = [...codes];
         });
+      });
+      // 同步改写裁决引用：来源主题并入目标主题，并去重
+      draft.adjudications.forEach((adjudication) => {
+        if (!adjudication.themeIds.includes(sourceId)) return;
+        const ids = adjudication.themeIds.filter((id) => id !== sourceId);
+        if (!ids.includes(targetId)) ids.push(targetId);
+        adjudication.themeIds = ids;
       });
       draft.themes.forEach((theme) => { if (theme.parentId === sourceId) theme.parentId = targetId; });
       draft.themes = draft.themes.filter((theme) => theme.id !== sourceId);
@@ -218,6 +250,11 @@ export function useCodingStore() {
             segment.assignments[coder] = segment.assignments[coder].map((id) => id === sourceId ? newId : id);
           }
         });
+        // 被拆走片段上的裁决引用同步指向新主题
+        const adjudication = draft.adjudications.find((item) => item.segmentId === segment.id);
+        if (adjudication && adjudication.themeIds.includes(sourceId)) {
+          adjudication.themeIds = adjudication.themeIds.map((id) => id === sourceId ? newId : id);
+        }
       });
       draft.activeThemeId = newId;
     });
@@ -262,26 +299,72 @@ export function useCodingStore() {
     });
   };
 
+  const setArbitrator = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === state.arbitrator) return;
+    transaction('设置裁决人', trimmed, (draft) => { draft.arbitrator = trimmed; });
+  };
+
+  /** 对一条分歧片段下裁决：采纳 A / 采纳 B / 合成双方主题，并写依据。原有判断不被覆盖。 */
+  const adjudicate = (segmentId: string, basis: AdjudicationBasis, themeIds: string[], rationale: string) => {
+    const segment = state.segments.find((item) => item.id === segmentId);
+    const exists = state.adjudications.some((item) => item.segmentId === segmentId);
+    // 新裁决只针对当前仍有分歧的片段；已留档的裁决在分歧消除后仍允许修订
+    if (!segment || (!exists && !isDisagreement(segment))) return;
+    const trimmedRationale = rationale.trim();
+    if (!trimmedRationale) return;
+    const validIds = [...new Set(themeIds)].filter((id) => state.themes.some((theme) => theme.id === id));
+    if (!validIds.length) return;
+    const basisLabel = basis === 'A' ? `采纳 ${state.coderA}` : basis === 'B' ? `采纳 ${state.coderB}` : '合成双方主题';
+    transaction(exists ? '修订裁决' : '分歧裁决', `${basisLabel} · 片段 ${segment.time}`, (draft) => {
+      const record: Adjudication = {
+        id: `adj-${crypto.randomUUID()}`,
+        segmentId,
+        themeIds: validIds,
+        basis,
+        rationale: trimmedRationale,
+        decidedAt: new Date().toISOString(),
+        decidedBy: draft.arbitrator
+      };
+      draft.adjudications = draft.adjudications.filter((item) => item.segmentId !== segmentId);
+      draft.adjudications.push(record);
+    });
+  };
+
+  /** 撤销裁决：只删除独立留档的裁决记录，两位编码者原来的判断保持不变 */
+  const clearAdjudication = (segmentId: string) => {
+    const record = state.adjudications.find((item) => item.segmentId === segmentId);
+    if (!record) return;
+    transaction('撤销裁决', `片段 ${state.segments.find((item) => item.id === segmentId)?.time ?? segmentId}`, (draft) => {
+      draft.adjudications = draft.adjudications.filter((item) => item.segmentId !== segmentId);
+    });
+  };
+
+  const adjudicationFor = (segmentId: string) => state.adjudications.find((item) => item.segmentId === segmentId);
+
   const exportCoding = (format: 'json' | 'csv') => {
-    const segmentMap = new Map(state.segments.map((segment) => [segment.id, segment]));
-    const themeMap = new Map(state.themes.map((theme) => [theme.id, theme]));
     if (format === 'json') return JSON.stringify({ exportedAt: new Date().toISOString(), ...cloneState(state) }, null, 2);
     const escape = (value: string) => `"${value.replaceAll('"', '""')}"`;
-    const rows = [['片段编号', '时间', '发言人', '原文', '编码者', '主题路径', '备忘录'].map(escape).join(',')];
+    const rows = [[
+      '片段编号', '时间', '发言人', '原文', '编码者', '主题路径', '备忘录',
+      '裁决状态', '裁决主题路径', '裁决依据'
+    ].map(escape).join(',')];
     state.segments.forEach((segment) => {
+      const adjudication = state.adjudications.find((item) => item.segmentId === segment.id);
+      const adjudicatedPaths = adjudication
+        ? adjudication.themeIds.map((id) => themePathOf(id, state.themes)).join(' | ')
+        : '';
+      const status = adjudication
+        ? `已裁决·${adjudication.basis === 'A' ? `采纳${state.coderA}` : adjudication.basis === 'B' ? `采纳${state.coderB}` : '合成'}`
+        : '未裁决';
       (['A', 'B'] as CoderId[]).forEach((coder) => {
         const name = coder === 'A' ? state.coderA : state.coderB;
         const themeIds = segment.assignments[coder];
-        const paths = themeIds.length ? themeIds.map((id) => {
-          const names: string[] = [];
-          let current = themeMap.get(id);
-          while (current) {
-            names.unshift(current.name);
-            current = current.parentId ? themeMap.get(current.parentId) : undefined;
-          }
-          return names.join(' / ');
-        }) : ['未编码'];
-        rows.push([segment.id, segment.time, segment.speaker, segment.text, name, paths.join(' | '), segmentMap.get(segment.id)?.note ?? ''].map(escape).join(','));
+        const paths = themeIds.length ? themeIds.map((id) => themePathOf(id, state.themes)) : ['未编码'];
+        rows.push([
+          segment.id, segment.time, segment.speaker, segment.text, name, paths.join(' | '), segment.note,
+          status, adjudicatedPaths, adjudication?.rationale ?? ''
+        ].map(escape).join(','));
       });
     });
     return `\uFEFF${rows.join('\n')}`;
@@ -335,6 +418,10 @@ export function useCodingStore() {
     updateSegment,
     importTranscript,
     addExample,
+    adjudicate,
+    clearAdjudication,
+    adjudicationFor,
+    setArbitrator,
     exportCoding,
     downloadExport,
     orderedThemes,
