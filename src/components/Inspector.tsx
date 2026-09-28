@@ -11,9 +11,30 @@ export default function Inspector(props: { store: Store }) {
   const [example, setExample] = createSignal('');
   const [segmentNote, setSegmentNote] = createSignal('');
   const [section, setSection] = createSignal<'theme' | 'compare' | 'audit'>('theme');
+  const [draftThemeIds, setDraftThemeIds] = createSignal<string[]>([]);
+  const [rationale, setRationale] = createSignal('');
 
   const theme = createMemo(() => props.store.state.themes.find((item) => item.id === props.store.state.activeThemeId));
   const segment = createMemo(() => props.store.state.segments.find((item) => item.id === props.store.state.activeSegmentId));
+  const adjudication = createMemo(() => {
+    const current = segment();
+    return current ? props.store.state.adjudications.find((item) => item.segmentId === current.id) : undefined;
+  });
+  const isDisputed = () => {
+    const current = segment();
+    return !!current && current.assignments.A.join('|') !== current.assignments.B.join('|');
+  };
+  const themeName = (id: string) => props.store.state.themes.find((item) => item.id === id)?.name ?? '未知主题';
+  const sourceLabel = (source: 'A' | 'B' | 'combined' | 'custom') => (
+    source === 'A' ? `采纳 ${props.store.state.coderA}` : source === 'B' ? `采纳 ${props.store.state.coderB}` : source === 'combined' ? '合成双方主题' : '研究者自定义组合'
+  );
+
+  // 切换片段时，裁决草稿同步为已有裁决结论；没有裁决则留空，等待研究者选择
+  createEffect(() => {
+    const current = adjudication();
+    setDraftThemeIds(current ? [...current.resolvedThemeIds] : []);
+    setRationale(current?.rationale ?? '');
+  });
   const citations = createMemo(() => {
     const current = theme();
     if (!current) return [];
@@ -39,6 +60,30 @@ export default function Inspector(props: { store: Store }) {
     const current = segment();
     if (!current || current.note === segmentNote()) return;
     props.store.updateSegment(current.id, { speaker: current.speaker, time: current.time, text: current.text, note: segmentNote() });
+  };
+
+  const applyPreset = (source: 'A' | 'B' | 'combined') => {
+    const current = segment();
+    if (!current) return;
+    const ids = source === 'A' ? current.assignments.A : source === 'B' ? current.assignments.B : [...new Set([...current.assignments.A, ...current.assignments.B])];
+    setDraftThemeIds(ids);
+  };
+
+  const toggleDraftTheme = (themeId: string) => {
+    setDraftThemeIds((items) => items.includes(themeId) ? items.filter((id) => id !== themeId) : [...items, themeId]);
+  };
+
+  const submitAdjudication = () => {
+    const current = segment();
+    const reason = rationale().trim();
+    if (!current || !draftThemeIds().length || !reason) return;
+    const union = new Set([...current.assignments.A, ...current.assignments.B]);
+    let source: 'A' | 'B' | 'combined' | 'custom' = 'custom';
+    const sameSet = (ids: string[]) => ids.length === draftThemeIds().length && ids.every((id) => draftThemeIds().includes(id));
+    if (sameSet(current.assignments.A)) source = 'A';
+    else if (sameSet(current.assignments.B)) source = 'B';
+    else if (sameSet([...union])) source = 'combined';
+    props.store.saveAdjudication(current.id, draftThemeIds(), reason, source);
   };
 
   return (
@@ -100,7 +145,7 @@ export default function Inspector(props: { store: Store }) {
       <Show when={section() === 'compare'}>
         <Show when={segment()} fallback={<div class="empty-state">请先从左侧正文选择片段。</div>}>
           {(activeSegment) => <>
-            <div class="compare-intro">比较同一位受访者在同一片段上的主题判断。任何不一致都会保留，直到研究者明确调整。</div>
+            <div class="compare-intro">比较同一位受访者在同一片段上的主题判断。分歧由研究者在下方裁决：可采纳任一方、合成双方主题或自定义结论，并写明依据。裁决独立留档，不会改写两位编码者的原始判断。</div>
             <div class="compare-grid">
               <div class="coder-column">
                 <div class="coder-header"><span class="avatar">A</span><strong>{props.store.state.coderA}</strong></div>
@@ -119,9 +164,57 @@ export default function Inspector(props: { store: Store }) {
                 </select>
               </div>
             </div>
-            <Show when={activeSegment().assignments.A.join('|') !== activeSegment().assignments.B.join('|')} fallback={<div class="agreement">✓ 当前判断完全一致</div>}>
-              <div class="disagreement">⚠ 当前判断存在分歧，导出结果仍会同时保留两位编码者记录。</div>
+            <Show when={isDisputed()} fallback={<div class="agreement">✓ 当前判断完全一致</div>}>
+              <div class="disagreement">⚠ 当前判断存在分歧，导出结果仍会同时保留两位编码者记录；裁决会独立留档，不覆盖原始判断。</div>
             </Show>
+
+            <Show when={adjudication()}>
+              {(existing) => <div class="ruling-card">
+                <div class="ruling-head">
+                  <span class="ruling-badge">已裁决 · {sourceLabel(existing().source)}</span>
+                  <button class="icon-text danger" title="撤回裁决（可通过撤销恢复）" onClick={() => props.store.clearAdjudication(existing().segmentId)}>撤回裁决</button>
+                </div>
+                <div class="ruling-themes"><For each={existing().resolvedThemeIds} fallback={<span class="muted">裁决时未选择主题</span>}>{(id) => <Chip size="small" color="success" label={themeName(id)} />}</For></div>
+                <p class="ruling-rationale">{existing().rationale}</p>
+                <div class="ruling-meta">
+                  裁决人：{existing().adjudicatorName} · {new Date(existing().updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                </div>
+                <details class="ruling-snapshot">
+                  <summary>查看裁决时双方原始判断留档</summary>
+                  <div><span class="avatar">A</span><For each={existing().coderSnapshot.A} fallback={<em>未编码</em>}>{(id) => <Chip size="small" label={themeName(id)} />}</For></div>
+                  <div><span class="avatar b">B</span><For each={existing().coderSnapshot.B} fallback={<em>未编码</em>}>{(id) => <Chip size="small" label={themeName(id)} />}</For></div>
+                </details>
+              </div>}
+            </Show>
+
+            <Show when={isDisputed() || adjudication()}>
+              <div class="adjudication-box">
+                <div class="adjudication-title">{adjudication() ? '修订裁决结论' : '分歧裁决'}</div>
+                <div class="adjudication-actions">
+                  <Button size="small" variant="outlined" onClick={() => applyPreset('A')}>采纳 A</Button>
+                  <Button size="small" variant="outlined" onClick={() => applyPreset('B')}>采纳 B</Button>
+                  <Button size="small" variant="outlined" onClick={() => applyPreset('combined')}>合成双方</Button>
+                </div>
+                <div class="draft-theme-list">
+                  <For each={props.store.orderedThemes()}>{(item) => (
+                    <label classList={{ checked: draftThemeIds().includes(item.id) }}>
+                      <input type="checkbox" checked={draftThemeIds().includes(item.id)} onChange={() => toggleDraftTheme(item.id)} />
+                      <span>{item.name}</span>
+                    </label>
+                  )}</For>
+                </div>
+                <label class="field-label">裁决依据（必填）
+                  <textarea class="native-textarea" value={rationale()} onInput={(event) => setRationale(event.currentTarget.value)} placeholder="说明采纳某一方或合成结论的依据，例如与操作定义、上下文的对应关系" />
+                </label>
+                <Button
+                  size="small"
+                  variant="contained"
+                  disabled={!draftThemeIds().length || !rationale().trim()}
+                  onClick={submitAdjudication}
+                >{adjudication() ? '保存修订裁决' : '提交裁决结论'}</Button>
+              </div>
+            </Show>
+
             <label class="field-label">片段编码备忘
               <textarea class="native-textarea" value={segmentNote()} onInput={(event) => setSegmentNote(event.currentTarget.value)} onBlur={saveNote} placeholder="记录此片段的分歧处理或引文提示" />
             </label>

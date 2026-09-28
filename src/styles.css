@@ -115,6 +115,32 @@ blockquote { margin: 7px 0; color: #2c4843; font-family: "Songti SC", serif; lin
 .agreement, .disagreement, .warning-box { margin-top: 12px; padding: 10px; border-radius: 8px; font-size: 11px; line-height: 1.5; }
 .agreement { color: #286148; background: #e8f4ed; }
 .disagreement { color: #8b3d2d; background: #fbeae4; }
+.ruling-card { margin-top: 12px; padding: 11px; border: 1px solid #b9d4c5; border-left: 3px solid #2f8060; border-radius: 9px; background: #f1f7f3; }
+.ruling-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.ruling-badge { color: #236048; background: #d9ecdf; border-radius: 100px; padding: 2px 9px; font-size: 10px; font-weight: 700; }
+.icon-text.danger { color: var(--danger); font-size: 10px; }
+.ruling-themes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.ruling-rationale { margin: 8px 0 0; color: #33504a; font-size: 11px; line-height: 1.6; }
+.ruling-meta { margin-top: 7px; color: var(--muted); font-size: 9px; }
+.ruling-snapshot { margin-top: 7px; font-size: 10px; color: var(--muted); }
+.ruling-snapshot summary { cursor: pointer; }
+.ruling-snapshot div { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 5px; }
+.ruling-snapshot .avatar { width: 18px; height: 18px; font-size: 9px; }
+.ruling-snapshot em { font-size: 10px; color: #99a49f; font-style: normal; }
+.adjudication-box { margin-top: 12px; padding: 11px; border: 1px dashed #b9c7c1; border-radius: 9px; background: #f8faf8; }
+.adjudication-title { color: var(--forest-dark); font-size: 11px; font-weight: 800; }
+.adjudication-actions { display: flex; gap: 5px; margin-top: 8px; }
+.adjudication-actions .MuiButton-root { font-size: 10px; flex: 1; }
+.draft-theme-list { max-height: 132px; overflow-y: auto; margin-top: 9px; padding: 7px; border: 1px solid var(--line); border-radius: 7px; background: #fff; display: grid; gap: 2px; }
+.draft-theme-list label { display: flex; align-items: center; gap: 5px; padding: 3px 4px; border-radius: 5px; font-size: 10px; color: #4a5a55; }
+.draft-theme-list label.checked { background: #e7f1eb; color: #1f5f55; font-weight: 700; }
+.draft-theme-list input { accent-color: var(--forest); }
+.ruled-dot { margin-left: auto; color: #236048; background: #d9ecdf; border-radius: 100px; padding: 2px 7px; }
+.segment-card.ruled { border-color: #c2d8cb; }
+.segment-card.ruled .conflict-dot { display: none; }
+.ruling-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 7px 0 0 28px; color: #2f6d52; font-size: 10px; font-weight: 700; }
+.ruling-line .MuiChip-root { height: 20px !important; font-size: 9px !important; background: #dcece2 !important; color: #236048 !important; }
+.scope-select { width: 118px; flex: 0 0 auto; font-size: 10px; padding: 6px 8px; }
 .audit-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
 .audit-summary div { padding: 11px; background: #f1f4f1; border-radius: 8px; }
 .audit-summary strong { display: block; font-family: "Songti SC", serif; font-size: 21px; }
@@ -127,7 +153,7 @@ blockquote { margin: 7px 0; color: #2c4843; font-family: "Songti SC", serif; lin
 .audit-item > span { color: #98a29e; }
 .audit-item p { margin: 2px 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lower-grid .panel { min-height: 173px; }
-.health-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 0 18px 18px; }
+.health-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 0 18px 18px; }
 .health-item { padding: 13px; border-radius: 10px; background: #f3f5f2; border-left: 3px solid #699b8e; }
 .health-item strong { display: block; font-family: "Songti SC", serif; font-size: 24px; color: var(--forest); }
 .health-item span { display: block; font-size: 12px; font-weight: 700; }

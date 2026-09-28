@@ -1,6 +1,7 @@
 import type { CodingState } from '../types';
 
 export const seedState = (): CodingState => {
+  const seededAt = new Date().toISOString();
   const themes = [
     { id: 't-education', name: '1. 教育经历', parentId: null, color: '#267365', definition: '正式或非正式的学习经历、学校与教师记忆。', memo: '注意区分入学选择和家庭影响。', examples: ['小学时老师让我第一次接触地图'] },
     { id: 't-school-choice', name: '1.1 学校选择', parentId: 't-education', color: '#4d9b8f', definition: '关于进入哪所学校、为何选择及其决策者的陈述。', memo: '家长和个人的理由要分别编码。', examples: [] },
@@ -31,7 +32,7 @@ export const seedState = (): CodingState => {
     activeThemeId: 't-school-choice',
     coderA: '林研究员',
     coderB: '赵研究员',
-    transcripts: [{ id: 'tr-001', title: '李岚访谈：教育与职业选择', participant: '李岚', importedAt: new Date().toISOString(), sourceName: '示例转写' }],
+    transcripts: [{ id: 'tr-001', title: '李岚访谈：教育与职业选择', participant: '李岚', importedAt: seededAt, sourceName: '示例转写' }],
     segments: lines.map((line, index) => ({
       id: `s-${String(index + 1).padStart(3, '0')}`,
       transcriptId: 'tr-001',
@@ -46,6 +47,17 @@ export const seedState = (): CodingState => {
       note: ''
     })),
     themes,
-    audit: [{ id: 'a-seed', at: new Date().toISOString(), action: '初始化', detail: '载入演示访谈与两个编码者的判断' }]
+    adjudications: [{
+      id: `adj-${crypto.randomUUID()}`,
+      segmentId: 's-002',
+      resolvedThemeIds: ['t-school-choice', 't-family'],
+      rationale: '片段同时陈述了“转到镇上学校”的学校选择与“家里觉得更好”的家庭参与，两位编码者各看到一面，裁决合成两个主题。',
+      source: 'combined',
+      adjudicatorName: '林研究员',
+      createdAt: seededAt,
+      updatedAt: seededAt,
+      coderSnapshot: { A: ['t-school-choice'], B: ['t-school-choice', 't-family'] }
+    }],
+    audit: [{ id: 'a-seed', at: seededAt, action: '初始化', detail: '载入演示访谈与两个编码者的判断' }]
   };
 };

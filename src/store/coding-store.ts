@@ -1,16 +1,22 @@
 import { createEffect, createSignal } from 'solid-js';
 import { createStore, reconcile, unwrap } from 'solid-js/store';
 import { seedState } from '../data/seed';
-import type { CoderId, CodingState, PersistedEnvelope, Segment, Theme } from '../types';
+import type { AdjudicationSource, CoderId, CodingState, PersistedEnvelope, Segment, Theme } from '../types';
 import { readEnvelope, writeEnvelope } from '../utils/db';
 
 const STORAGE_KEY = 'sologsb-1019-state-v1';
 const TAB_ID = crypto.randomUUID();
 
+// 旧版本存档没有裁决字段，载入时补齐，保证刷新恢复与跨标签页同步后结构一致
+const normalizeState = (raw: CodingState): CodingState => ({
+  ...raw,
+  adjudications: Array.isArray(raw.adjudications) ? raw.adjudications : []
+});
+
 const loadLocal = (): CodingState => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as CodingState;
+    if (raw) return normalizeState(JSON.parse(raw) as CodingState);
   } catch {
     localStorage.removeItem(STORAGE_KEY);
   }
@@ -55,9 +61,9 @@ const transaction = (action: string, detail: string, mutator: (draft: CodingStat
   setUndoStack((items) => [...items.slice(-49), cloneState(state)]);
   setRedoStack([]);
   const next = cloneState(state);
-  mutator(next);
   next.revision = state.revision + 1;
   next.updatedAt = new Date().toISOString();
+  mutator(next);
   next.audit.unshift({ id: crypto.randomUUID(), at: next.updatedAt, action, detail });
   next.audit = next.audit.slice(0, 250);
   setState(reconcile(next, { merge: false }));
@@ -159,6 +165,48 @@ export function useCodingStore() {
     });
   };
 
+  const adjudicationFor = (segmentId: string) => state.adjudications.find((item) => item.segmentId === segmentId);
+
+  // 裁决独立留档：只写入 adjudications，不改动两位编码者原来的 assignments
+  const saveAdjudication = (segmentId: string, resolvedThemeIds: string[], rationale: string, source: AdjudicationSource) => {
+    const segment = state.segments.find((item) => item.id === segmentId);
+    if (!segment) return;
+    const existing = adjudicationFor(segmentId);
+    const sourceLabel = source === 'A' ? state.coderA : source === 'B' ? state.coderB : source === 'combined' ? '合成双方' : '研究者自定义';
+    transaction(existing ? '修订分歧裁决' : '作出分歧裁决', `${segment.time} ${segment.speaker} · 采纳来源：${sourceLabel}`, (draft) => {
+      const current = draft.segments.find((item) => item.id === segmentId)!;
+      const snapshot = { A: [...current.assignments.A], B: [...current.assignments.B] };
+      const found = draft.adjudications.find((item) => item.segmentId === segmentId);
+      if (found) {
+        found.resolvedThemeIds = [...resolvedThemeIds];
+        found.rationale = rationale;
+        found.source = source;
+        found.updatedAt = draft.updatedAt;
+        found.coderSnapshot = snapshot;
+      } else {
+        draft.adjudications.push({
+          id: `adj-${crypto.randomUUID()}`,
+          segmentId,
+          resolvedThemeIds: [...resolvedThemeIds],
+          rationale,
+          source,
+          adjudicatorName: state.coderA || '研究者',
+          createdAt: draft.updatedAt,
+          updatedAt: draft.updatedAt,
+          coderSnapshot: snapshot
+        });
+      }
+    });
+  };
+
+  const clearAdjudication = (segmentId: string) => {
+    const existing = adjudicationFor(segmentId);
+    if (!existing) return;
+    transaction('撤回分歧裁决', '裁决记录与两位编码者的原始判断均保留可撤销历史', (draft) => {
+      draft.adjudications = draft.adjudications.filter((item) => item.segmentId !== segmentId);
+    });
+  };
+
   const addTheme = (name: string, parentId: string | null) => {
     const id = `t-${crypto.randomUUID()}`;
     transaction('新建主题', name, (draft) => {
@@ -185,6 +233,12 @@ export function useCodingStore() {
         segment.assignments.A = segment.assignments.A.filter((id) => id !== themeId);
         segment.assignments.B = segment.assignments.B.filter((id) => id !== themeId);
       });
+      // 裁决引用同样摘掉已删除主题，快照按同一规则同步
+      draft.adjudications.forEach((adjudication) => {
+        adjudication.resolvedThemeIds = adjudication.resolvedThemeIds.filter((id) => id !== themeId);
+        adjudication.coderSnapshot.A = adjudication.coderSnapshot.A.filter((id) => id !== themeId);
+        adjudication.coderSnapshot.B = adjudication.coderSnapshot.B.filter((id) => id !== themeId);
+      });
       if (draft.activeThemeId === themeId) draft.activeThemeId = draft.themes[0]?.id ?? '';
     });
   };
@@ -198,6 +252,17 @@ export function useCodingStore() {
           if (segment.assignments[coder].includes(sourceId)) codes.add(targetId);
           segment.assignments[coder] = [...codes];
         });
+      });
+      // 同步改写裁决结论与裁决时的判断快照，保持引用指向合并后的主题
+      draft.adjudications.forEach((adjudication) => {
+        const retarget = (ids: string[]) => {
+          const next = new Set(ids.filter((id) => id !== sourceId));
+          if (ids.includes(sourceId)) next.add(targetId);
+          return [...next];
+        };
+        adjudication.resolvedThemeIds = retarget(adjudication.resolvedThemeIds);
+        adjudication.coderSnapshot.A = retarget(adjudication.coderSnapshot.A);
+        adjudication.coderSnapshot.B = retarget(adjudication.coderSnapshot.B);
       });
       draft.themes.forEach((theme) => { if (theme.parentId === sourceId) theme.parentId = targetId; });
       draft.themes = draft.themes.filter((theme) => theme.id !== sourceId);
@@ -218,6 +283,14 @@ export function useCodingStore() {
             segment.assignments[coder] = segment.assignments[coder].map((id) => id === sourceId ? newId : id);
           }
         });
+        // 被拆走的片段，其裁决结论与快照中的旧主题改指新主题
+        const adjudication = draft.adjudications.find((item) => item.segmentId === segment.id);
+        if (adjudication) {
+          const move = (ids: string[]) => ids.map((id) => id === sourceId ? newId : id);
+          adjudication.resolvedThemeIds = move(adjudication.resolvedThemeIds);
+          adjudication.coderSnapshot.A = move(adjudication.coderSnapshot.A);
+          adjudication.coderSnapshot.B = move(adjudication.coderSnapshot.B);
+        }
       });
       draft.activeThemeId = newId;
     });
@@ -267,22 +340,47 @@ export function useCodingStore() {
     const themeMap = new Map(state.themes.map((theme) => [theme.id, theme]));
     if (format === 'json') return JSON.stringify({ exportedAt: new Date().toISOString(), ...cloneState(state) }, null, 2);
     const escape = (value: string) => `"${value.replaceAll('"', '""')}"`;
-    const rows = [['片段编号', '时间', '发言人', '原文', '编码者', '主题路径', '备忘录'].map(escape).join(',')];
-    state.segments.forEach((segment) => {
-      (['A', 'B'] as CoderId[]).forEach((coder) => {
-        const name = coder === 'A' ? state.coderA : state.coderB;
-        const themeIds = segment.assignments[coder];
-        const paths = themeIds.length ? themeIds.map((id) => {
-          const names: string[] = [];
-          let current = themeMap.get(id);
-          while (current) {
-            names.unshift(current.name);
-            current = current.parentId ? themeMap.get(current.parentId) : undefined;
-          }
-          return names.join(' / ');
-        }) : ['未编码'];
-        rows.push([segment.id, segment.time, segment.speaker, segment.text, name, paths.join(' | '), segmentMap.get(segment.id)?.note ?? ''].map(escape).join(','));
-      });
+    const themePath = (id: string) => {
+      const names: string[] = [];
+      let current = themeMap.get(id);
+      while (current) {
+        names.unshift(current.name);
+        current = current.parentId ? themeMap.get(current.parentId) : undefined;
+      }
+      return names.join(' / ');
+    };
+    const themePaths = (ids: string[]) => ids.length ? ids.map(themePath).join(' | ') : '未编码';
+    // 每片段一行：原始双编码与裁决分列，便于把未裁决与已裁决分开核对
+    const rows = [[
+      '片段编号', '访谈', '时间', '发言人', '原文',
+      `${state.coderA}主题路径`, `${state.coderB}主题路径`,
+      '裁决状态', '裁决主题路径', '裁决依据', '裁决来源', '片段备忘录'
+    ].map(escape).join(',')];
+    const sorted = [...state.segments].sort((a, b) => (
+      a.transcriptId < b.transcriptId ? -1 : a.transcriptId > b.transcriptId ? 1 : a.order - b.order
+    ));
+    const transcriptTitle = (id: string) => state.transcripts.find((item) => item.id === id)?.title ?? id;
+    const sourceLabel = (source: AdjudicationSource) => (
+      source === 'A' ? `采纳 ${state.coderA}` : source === 'B' ? `采纳 ${state.coderB}` : source === 'combined' ? '合成双方' : '研究者自定义'
+    );
+    sorted.forEach((segment) => {
+      const adjudication = state.adjudications.find((item) => item.segmentId === segment.id);
+      const disputed = segment.assignments.A.join('|') !== segment.assignments.B.join('|');
+      const status = adjudication ? '已裁决' : disputed ? '待裁决分歧' : '一致';
+      rows.push([
+        segment.id,
+        transcriptTitle(segment.transcriptId),
+        segment.time,
+        segment.speaker,
+        segment.text,
+        themePaths(segment.assignments.A),
+        themePaths(segment.assignments.B),
+        status,
+        adjudication ? (adjudication.resolvedThemeIds.length ? adjudication.resolvedThemeIds.map(themePath).join(' | ') : '未选主题') : '',
+        adjudication?.rationale ?? '',
+        adjudication ? sourceLabel(adjudication.source) : '',
+        segmentMap.get(segment.id)?.note ?? ''
+      ].map(escape).join(','));
     });
     return `\uFEFF${rows.join('\n')}`;
   };
@@ -308,7 +406,7 @@ export function useCodingStore() {
     if (!remote) return;
     setUndoStack((items) => [...items, cloneState(state)]);
     setRedoStack([]);
-    setState(reconcile(remote.state, { merge: false }));
+    setState(reconcile(normalizeState(remote.state), { merge: false }));
     setRemoteEnvelope(null);
   };
 
@@ -327,6 +425,9 @@ export function useCodingStore() {
     setCoder,
     toggleAssignment,
     batchAssign,
+    adjudicationFor,
+    saveAdjudication,
+    clearAdjudication,
     addTheme,
     updateTheme,
     deleteTheme,

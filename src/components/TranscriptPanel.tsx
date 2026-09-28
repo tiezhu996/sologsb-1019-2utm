@@ -8,10 +8,19 @@ export default function TranscriptPanel(props: { store: Store }) {
   const [query, setQuery] = createSignal('');
   const [selected, setSelected] = createSignal<string[]>([]);
   const [batchTheme, setBatchTheme] = createSignal('');
+  const [scope, setScope] = createSignal<'all' | 'pending' | 'ruled'>('all');
+
+  const adjudicationFor = (segmentId: string) => props.store.state.adjudications.find((item) => item.segmentId === segmentId);
+  const isDisputed = (segment: { assignments: { A: string[]; B: string[] } }) => segment.assignments.A.join('|') !== segment.assignments.B.join('|');
 
   const segments = createMemo(() => props.store.state.segments
     .filter((segment) => segment.transcriptId === props.store.state.activeTranscriptId)
     .filter((segment) => `${segment.speaker} ${segment.text}`.toLowerCase().includes(query().toLowerCase()))
+    .filter((segment) => {
+      if (scope() === 'pending') return isDisputed(segment) && !adjudicationFor(segment.id);
+      if (scope() === 'ruled') return !!adjudicationFor(segment.id);
+      return true;
+    })
     .sort((a, b) => a.order - b.order));
 
   const toggleSelected = (id: string) => {
@@ -54,6 +63,11 @@ export default function TranscriptPanel(props: { store: Store }) {
       </select>
       <div class="search-row">
         <input class="native-input" placeholder="搜索原文或发言人（/）" value={query()} onInput={(event) => setQuery(event.currentTarget.value)} />
+        <select class="native-input scope-select" value={scope()} onChange={(event) => setScope(event.currentTarget.value as 'all' | 'pending' | 'ruled')} aria-label="按裁决状态筛选">
+          <option value="all">全部片段</option>
+          <option value="pending">待裁决分歧</option>
+          <option value="ruled">已裁决</option>
+        </select>
         <Button size="small" onClick={toggleAll}>{selected().length === segments().length && segments().length ? '取消全选' : '全选'}</Button>
       </div>
       <div class="batch-row">
@@ -69,10 +83,12 @@ export default function TranscriptPanel(props: { store: Store }) {
           const isActive = () => props.store.state.activeSegmentId === segment.id;
           const themeNames = () => [...new Set([...segment.assignments.A, ...segment.assignments.B])]
             .map((id) => props.store.state.themes.find((theme) => theme.id === id)?.name ?? '未知主题');
+          const ruling = () => adjudicationFor(segment.id);
+          const rulingNames = () => ruling()?.resolvedThemeIds.map((id) => props.store.state.themes.find((theme) => theme.id === id)?.name ?? '未知主题') ?? [];
           return (
             <article
               class="segment-card"
-              classList={{ active: isActive() }}
+              classList={{ active: isActive(), ruled: !!ruling() }}
               onClick={() => props.store.selectSegment(segment.id)}
               tabIndex={0}
               onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') props.store.selectSegment(segment.id); }}
@@ -87,13 +103,19 @@ export default function TranscriptPanel(props: { store: Store }) {
                 <span class="segment-index">#{index() + 1}</span>
                 <span class="segment-time">{segment.time}</span>
                 <strong>{segment.speaker}</strong>
-                <Show when={segment.assignments.A.join('|') !== segment.assignments.B.join('|')}>
-                  <span class="conflict-dot" title="两位编码者判断不一致">分歧</span>
+                <Show when={ruling()}>
+                  <span class="ruled-dot" title="该分歧已经研究者裁决">已裁决</span>
+                </Show>
+                <Show when={isDisputed(segment) && !ruling()}>
+                  <span class="conflict-dot" title="两位编码者判断不一致">待裁决</span>
                 </Show>
               </div>
               <p>{segment.text}</p>
               <Show when={themeNames().length}>
                 <div class="chip-line"><For each={themeNames()}>{(name) => <Chip size="small" label={name} />}</For></div>
+              </Show>
+              <Show when={ruling() && rulingNames().length}>
+                <div class="ruling-line">裁决：<For each={rulingNames()}>{(name) => <Chip size="small" color="success" label={name} />}</For></div>
               </Show>
               <Show when={segment.note}><div class="segment-note">编码备忘：{segment.note}</div></Show>
             </article>
